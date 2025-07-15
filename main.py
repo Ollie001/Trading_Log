@@ -1,3 +1,7 @@
+# Updated GUI App with:
+# - Slider for "Min Trades" in Confluence Pair Stats
+# - Theme dropdown with dynamic plot color change
+
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -6,7 +10,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-# Configure dark mode for matplotlib
+# Default matplotlib style
 plt.style.use('dark_background')
 
 # Brand name
@@ -29,12 +33,6 @@ def parse_rr(rr_str):
         except:
             return None
 
-def load_csv():
-    file_path = filedialog.askopenfilename(filetypes=[("CSV Files", "*.csv")])
-    if file_path:
-        df = pd.read_csv(file_path)
-        app.load_data(df, os.path.basename(os.path.dirname(file_path)))
-
 class TradeAnalyzerApp:
     def __init__(self, root):
         self.root = root
@@ -42,6 +40,14 @@ class TradeAnalyzerApp:
         self.df = None
         self.folder_name = ""
         self.pair_stats_df = pd.DataFrame()
+        self.confluence_min_trades = tk.IntVar(value=3)
+        self.pair_min_trades = tk.IntVar(value=3)
+        self.theme = tk.StringVar(value='Dark')
+
+        self.color_schemes = {
+            'Dark': {'bg': 'black', 'fg': 'white', 'win': 'green', 'loss': 'red'},
+            'Blue & White': {'bg': '#0e1b2c', 'fg': 'white', 'win': 'blue', 'loss': 'white'}
+        }
 
         self.notebook = ttk.Notebook(root)
         self.notebook.pack(fill='both', expand=True)
@@ -50,15 +56,24 @@ class TradeAnalyzerApp:
         self.create_equity_tab()
         self.create_confluence_tab()
         self.create_pair_tab()
+        self.create_theme_switcher()
 
     def create_menu(self):
         menubar = tk.Menu(self.root)
         filemenu = tk.Menu(menubar, tearoff=0)
-        filemenu.add_command(label="Load CSV", command=load_csv)
+        filemenu.add_command(label="Load CSV", command=self.load_csv)
         filemenu.add_separator()
         filemenu.add_command(label="Exit", command=self.root.quit)
         menubar.add_cascade(label="File", menu=filemenu)
         self.root.config(menu=menubar)
+
+    def create_theme_switcher(self):
+        frame = ttk.Frame(self.root)
+        frame.pack(fill='x')
+        ttk.Label(frame, text="Theme:").pack(side='left', padx=(10, 5))
+        theme_box = ttk.Combobox(frame, textvariable=self.theme, values=list(self.color_schemes.keys()), state="readonly")
+        theme_box.pack(side='left')
+        theme_box.bind("<<ComboboxSelected>>", lambda e: self.redraw_all())
 
     def create_equity_tab(self):
         self.tab1 = ttk.Frame(self.notebook)
@@ -70,6 +85,8 @@ class TradeAnalyzerApp:
     def create_confluence_tab(self):
         self.tab2 = ttk.Frame(self.notebook)
         self.notebook.add(self.tab2, text='Win Rate by Confluence')
+        slider = tk.Scale(self.tab2, from_=1, to=20, orient='horizontal', variable=self.confluence_min_trades, label="Min Trades", command=lambda val: self.plot_confluences())
+        slider.pack()
         self.fig2, self.ax2 = plt.subplots(figsize=(10, 5))
         self.canvas2 = FigureCanvasTkAgg(self.fig2, master=self.tab2)
         self.canvas2.get_tk_widget().pack(fill='both', expand=True)
@@ -77,19 +94,31 @@ class TradeAnalyzerApp:
     def create_pair_tab(self):
         self.tab3 = ttk.Frame(self.notebook)
         self.notebook.add(self.tab3, text='Confluence Pair Stats')
-
+        slider = tk.Scale(self.tab3, from_=1, to=20, orient='horizontal', variable=self.pair_min_trades, label="Min Trades", command=lambda val: self.analyze_pairs())
+        slider.pack()
         self.table = tk.Text(self.tab3, wrap='none', bg='#1e1e1e', fg='white')
         self.table.pack(fill='both', expand=True)
-
         self.save_button = tk.Button(self.tab3, text="Save Stats to CSV", command=self.save_stats)
         self.save_button.pack(pady=5)
+
+    def load_csv(self):
+        file_path = filedialog.askopenfilename(filetypes=[("CSV Files", "*.csv")])
+        if file_path:
+            df = pd.read_csv(file_path)
+            self.load_data(df, os.path.basename(os.path.dirname(file_path)))
 
     def load_data(self, df, folder_name):
         self.df = df
         self.folder_name = folder_name
+        self.redraw_all()
+
+    def redraw_all(self):
         self.analyze_equity()
         self.plot_confluences()
         self.analyze_pairs()
+
+    def get_colors(self):
+        return self.color_schemes.get(self.theme.get(), self.color_schemes['Dark'])
 
     def analyze_equity(self):
         df = self.df.copy()
@@ -120,7 +149,7 @@ class TradeAnalyzerApp:
         df['Trade Outcome'] = df['Trade Outcome'].str.strip().str.title()
         df['Entry Confirmation'] = df['Entry Confirmation'].fillna('').astype(str)
         filtered = df[df['Trade Outcome'].isin(['Win', 'Loss'])]
-
+        min_trades = self.confluence_min_trades.get()
         confluence_stats = {}
         for _, row in filtered.iterrows():
             outcome = row['Trade Outcome']
@@ -133,23 +162,23 @@ class TradeAnalyzerApp:
         stats = []
         for conf, counts in confluence_stats.items():
             total = counts['Win'] + counts['Loss']
-            win_rate = (counts['Win'] / total) * 100
-            stats.append((conf, counts['Win'], counts['Loss'], win_rate))
+            if total >= min_trades:
+                win_rate = (counts['Win'] / total) * 100
+                stats.append((conf, counts['Win'], counts['Loss'], win_rate))
 
         stats = sorted(stats, key=lambda x: x[3], reverse=True)
-
         self.ax2.clear()
+        colors = self.get_colors()
         labels = [s[0] for s in stats]
         win_counts = [s[1] for s in stats]
         loss_counts = [s[2] for s in stats]
 
-        self.ax2.barh(labels, win_counts, color='green', label='Wins')
-        self.ax2.barh(labels, loss_counts, left=win_counts, color='red', label='Losses')
+        self.ax2.barh(labels, win_counts, color=colors['win'], label='Wins')
+        self.ax2.barh(labels, loss_counts, left=win_counts, color=colors['loss'], label='Losses')
         self.ax2.set_xlabel("Number of Trades")
         self.ax2.set_title("Win Rate by Confluence")
         self.ax2.legend()
         self.ax2.grid(True)
-
         self.canvas2.draw()
 
     def analyze_pairs(self):
@@ -158,8 +187,8 @@ class TradeAnalyzerApp:
         df['Entry Confirmation'] = df['Entry Confirmation'].fillna('').astype(str)
         df['P&L'] = df['P&L'].replace('[\$,]', '', regex=True).astype(float)
         df['RR Ratio'] = df['RR Ratio'].apply(parse_rr)
-
         filtered = df[df['Trade Outcome'].isin(['Win', 'Loss'])]
+        min_trades = self.pair_min_trades.get()
         pair_stats = {}
 
         for _, row in filtered.iterrows():
@@ -181,6 +210,8 @@ class TradeAnalyzerApp:
         rows = []
         for pair, stats in pair_stats.items():
             total = stats['Wins'] + stats['Losses']
+            if total < min_trades:
+                continue
             avg_pnl = sum(stats['P&Ls']) / total
             avg_rr = sum(stats['RRs']) / len(stats['RRs']) if stats['RRs'] else None
             win_rate = (stats['Wins'] / total) * 100
@@ -200,7 +231,6 @@ class TradeAnalyzerApp:
 
         self.pair_stats_df = pd.DataFrame(rows)
         self.pair_stats_df = self.pair_stats_df.sort_values(by='Avg P&L', ascending=False)
-
         self.table.delete('1.0', tk.END)
         self.table.insert(tk.END, self.pair_stats_df.to_string(index=False))
 
